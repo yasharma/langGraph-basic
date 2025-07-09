@@ -7,6 +7,11 @@ from langchain_tavily import TavilySearch
 
 from util.State import State
 from langgraph.prebuilt import ToolNode, tools_condition
+from langchain_community.agent_toolkits import SQLDatabaseToolkit
+from db import db
+from rich.console import Console
+from rich.panel import Panel
+console = Console()
 
 load_dotenv()
 
@@ -15,17 +20,27 @@ load_dotenv()
 # You can use any other memory saver, like Redis, or a database
 memory = MemorySaver()
 
-# Tool
-tool = TavilySearch(max_results=2)
-tools = [tool]
-
-
-graph_builder = StateGraph(State)
-tool_node = ToolNode(tools=[tool])
-graph_builder.add_node("tools", tool_node)
 
 
 llm = init_chat_model("openai:gpt-4.1")
+
+toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+
+sql_tools = toolkit.get_tools()
+
+# Extract the tools we need
+tavily_tool = TavilySearch(max_results=2)
+schema_tool = next(tool for tool in sql_tools if tool.name == "sql_db_schema")
+query_tool = next(tool for tool in sql_tools if tool.name == "sql_db_query")
+
+# All tools - now the LLM can choose between web search and database operations
+tools = [tavily_tool, schema_tool, query_tool]
+
+graph_builder = StateGraph(State)
+tool_node = ToolNode(tools)
+graph_builder.add_node("tools", tool_node)
+
+# Bind all tools to LLM
 llm_with_tools = llm.bind_tools(tools)
 
 
@@ -51,28 +66,61 @@ graph_builder.add_edge("tools", "chatbot")
 graph_builder.add_edge(START, "chatbot")
 graph = graph_builder.compile(checkpointer=memory)
 
-config = {"configurable": {"thread_id": "1"}}
+config = {"configurable": {"thread_id": "2"}}
+# ...existing imports and setup...
+
 def stream_graph_updates(user_input: str):
-    # The config is the **second positional argument** to stream() or invoke()!
     events = graph.stream(
         {"messages": [{"role": "user", "content": user_input}]},
         config,
         stream_mode="values",
     )
     for event in events:
-        event["messages"][-1].pretty_print()
+        message = event["messages"][-1]
+
+        # Check if message has tool calls
+        if hasattr(message, 'tool_calls') and message.tool_calls:
+            # Display tool usage
+            for tool_call in message.tool_calls:
+                console.print(f"[yellow]🔧 Using tool:[/yellow] {tool_call.get('name', 'unknown')}")
+        
+        # Enhanced display with Rich console
+        if hasattr(message, 'content') and message.content:
+            console.print(Panel(
+                message.content,
+                title="🤖 Assistant",
+                title_align="left",
+                border_style="blue",
+                padding=(1, 2)
+            ))
+        elif hasattr(message, 'tool_calls'):
+            console.print("[dim]🔄 Processing tool calls...[/dim]")
+
+# Enhanced main loop
+console.print(Panel(
+    "🤖 LangGraph Chatbot with Database & Web Search\n\n" +
+    "💬 Ask me anything!\n" +
+    "📊 Database queries: 'How many users?', 'Show me artists'\n" +
+    "🌐 Web search: 'Latest news', 'Current weather'\n" +
+    "❌ Type 'quit', 'exit', or 'q' to end",
+    title="Welcome",
+    border_style="cyan"
+))
 
 while True:
     try:
-        user_input = input("User: ")
+        user_input = console.input("\n[bold green]User:[/bold green] ")
         if user_input.lower() in ["quit", "exit", "q"]:
-            print("Goodbye!")
+            console.print("[bold red]Goodbye![/bold red]")
             break
 
         stream_graph_updates(user_input)
-    except:
-        # fallback if input() is not available
+    except KeyboardInterrupt:
+        console.print("\n[bold red]Goodbye![/bold red]")
+        break
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
         user_input = "What do you know about LangGraph?"
-        print("User: " + user_input)
+        console.print(f"[bold green]User:[/bold green] {user_input}")
         stream_graph_updates(user_input)
         break
