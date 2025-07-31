@@ -32,9 +32,10 @@ sql_tools = toolkit.get_tools()
 tavily_tool = TavilySearch(max_results=2)
 schema_tool = next(tool for tool in sql_tools if tool.name == "sql_db_schema")
 query_tool = next(tool for tool in sql_tools if tool.name == "sql_db_query")
+query_checker_tool = next((tool for tool in sql_tools if tool.name == "sql_db_query_checker"), None)
 
 # All tools - now the LLM can choose between web search and database operations
-tools = [tavily_tool, schema_tool, query_tool]
+tools = [tavily_tool, schema_tool, query_tool, query_checker_tool]
 
 graph_builder = StateGraph(State)
 tool_node = ToolNode(tools)
